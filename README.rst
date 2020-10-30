@@ -1,3 +1,6 @@
+
+DNM: this is a dummy PR for regression testing the CI-LIB
+
 nRF Connect SDK: sdk-nrf
 ########################
 
