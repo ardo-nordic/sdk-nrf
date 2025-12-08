@@ -34,17 +34,38 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 DEFINE_FLAG(flag_is_connected);
 DEFINE_FLAG(flag_sec_lvl_changed);
 
+static bool is_bondable;
 static struct bt_conn *test_conn;
-static struct bt_nrf_ltk test_ltk = {{0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf},};
+static struct bt_nrf_ltk test_ltk = {
+    {0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf},};
 
-static bool authenticated;
+typedef void (*conn_action_cb)(void);
+
+struct test_vector {
+    conn_action_cb conn_cb;
+    bt_security_t sec_lvl;
+    bool exp_err;
+    bool auth;
+};
+
+static struct test_vector *p_test;
 
 static void set_custom_ltk(void)
 {
     int err;
 
-    err = bt_nrf_conn_set_ltk(test_conn, &test_ltk, authenticated);
+    LOG_INF("Set custom LTK");
+    err = bt_nrf_conn_set_ltk(test_conn, &test_ltk, p_test->auth);
     TEST_ASSERT(!err, "bt_nrf_conn_set_ltk failed (%d).", err);
+}
+
+static void flip_bondable(void)
+{
+    int err;
+
+    is_bondable = !is_bondable;
+    err = bt_conn_set_bondable(test_conn, is_bondable);
+    TEST_ASSERT(!err, "bt_conn_set_bondablefailed (%d).", err);
 }
 
 static void clear_conn(void)
@@ -52,6 +73,7 @@ static void clear_conn(void)
     if (test_conn) {
         bt_conn_unref(test_conn);
         test_conn = NULL;
+        LOG_INF("Disconnected and cleared");
     }
 }
 
@@ -63,9 +85,8 @@ static void check_sec_info(struct bt_conn *conn)
     err = bt_conn_get_info(conn, &info);
     TEST_ASSERT(!err, "bt_conn_get_info failed (%d).", err);
 
-    bt_security_t sec_lvl = authenticated ? BT_SECURITY_L4 : BT_SECURITY_L2;
-    TEST_ASSERT(info.security.level == sec_lvl, "Security level mismatch got %u, expected %u",
-                info.security.level, sec_lvl);
+    TEST_ASSERT(info.security.level == p_test->sec_lvl, "Security level mismatch got %u, expected %u",
+                info.security.level, p_test->sec_lvl);
     TEST_ASSERT(info.security.enc_key_size == sizeof(test_ltk), "Key size didn't match");
     TEST_ASSERT(info.security.flags == BT_SECURITY_FLAG_SC, "Sec flags didn't match");
 }
@@ -85,7 +106,10 @@ static void connected(struct bt_conn *conn, uint8_t err)
     }
 
     LOG_INF("Connected");
-    set_custom_ltk();
+
+    if (p_test->conn_cb) {
+        p_test->conn_cb();
+    }
 
     SET_FLAG(flag_is_connected);
 }
@@ -98,17 +122,38 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 static void sec_changed(struct bt_conn *conn, bt_security_t level,
                 enum bt_security_err err)
 {
-    TEST_ASSERT(!err, "Security level update failed (%d).", err);
+    if (p_test->exp_err) {
+        TEST_ASSERT(err, "Security update expected to fail.");
+    } else {
+        TEST_ASSERT(!err, "Security level update failed (%u).", err);
 
-    LOG_INF("Sec level set %u", level);
-    check_sec_info(conn);
-    flag_sec_lvl_changed = true;
+        LOG_INF("Sec level set %u", level);
+        check_sec_info(conn);
+        flag_sec_lvl_changed = true;
+    }
 }
 
 BT_CONN_CB_DEFINE(conn_callbacks) = {
     .connected = connected,
     .disconnected = disconnected,
     .security_changed = sec_changed,
+};
+
+static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
+{
+    if (!p_test->exp_err) {
+        TEST_FAIL("Pairing failed (unexpected): reason %u", reason);
+    }
+}
+
+static void pairing_complete(struct bt_conn *conn, bool bonded)
+{
+    TEST_ASSERT(is_bondable == bonded, "Expected bonding status: %u, got %u", is_bondable, bonded);
+}
+
+static struct bt_conn_auth_info_cb bt_conn_auth_info_cb = {
+    .pairing_failed = pairing_failed,
+    .pairing_complete = pairing_complete,
 };
 
 static void scan_cb(const bt_addr_le_t *addr, int8_t rssi,
@@ -127,7 +172,6 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi,
     }
 
     bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
-    LOG_INF("Connecting to dst %s", addr_str);
 
     err = bt_le_scan_stop();
     TEST_ASSERT(!err, "Err bt_le_scan_stop %d", err);
@@ -142,17 +186,22 @@ static void scan_and_connect(void)
 
     err = bt_le_scan_start(BT_LE_SCAN_PASSIVE, scan_cb);
     TEST_ASSERT(!err, "Err bt_le_scan_start %d", err);
+
+    WAIT_FOR_FLAG(flag_is_connected);
 }
 
-static void disconnect(void)
+static void disconnect_and_clear(void)
 {
     int err;
 
     err = bt_conn_disconnect(test_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
     TEST_ASSERT(!err, "Err bt_conn_disconnect %d", err);
+
+    WAIT_FOR_FLAG_UNSET(flag_is_connected);
+    clear_conn();
 }
 
-static void advertise_connectable(void)
+static void advertise_and_connect(void)
 {
     int err;
     struct bt_le_adv_param param = {};
@@ -164,14 +213,55 @@ static void advertise_connectable(void)
 
     err = bt_le_adv_start(&param, NULL, 0, NULL, 0);
     TEST_ASSERT(err == 0, "Advertising failed to start (err %d)", err);
+
+    WAIT_FOR_FLAG(flag_is_connected);
 }
 
-static void set_security(void)
+static void set_security(bt_security_t sec)
 {
-	int err;
+    int err;
 
-	err = bt_conn_set_security(test_conn, BT_SECURITY_L2);
-	TEST_ASSERT(!err, "Err bt_conn_set_security %d", err);
+    err = bt_conn_set_security(test_conn, sec);
+    TEST_ASSERT(!err, "Err bt_conn_set_security %d", err);
+
+    if (!p_test->exp_err) {
+        TAKE_FLAG(flag_sec_lvl_changed);
+    }
+}
+
+static void unpair(void)
+{
+    int err = bt_unpair(BT_ID_DEFAULT, BT_ADDR_LE_ANY);
+    TEST_ASSERT(!err, "Failed bt_unpair %d", err);
+}
+
+static void passkey_confirm_cb(struct bt_conn *conn, unsigned int passkey)
+{
+    int err = bt_conn_auth_passkey_confirm(conn);
+    TEST_ASSERT(!err, "Failed bt_conn_auth_passkey_confirm %d", err);
+}
+
+static void cancel_cb(struct bt_conn *conn)
+{
+    TEST_FAIL("Unexpected authentication canceled");
+}
+
+static void passkey_display_cb(struct bt_conn *conn, unsigned int passkey)
+{
+    LOG_INF("Passkey: %u", passkey);
+}
+
+static struct bt_conn_auth_cb auth_cb = {
+    .passkey_display = passkey_display_cb,
+    .passkey_confirm = passkey_confirm_cb,
+    .cancel = cancel_cb,
+};
+
+static void enable_passkey(void)
+{
+    LOG_INF("Enable paskey");
+    int err = bt_conn_auth_cb_register(&auth_cb);
+    TEST_ASSERT(!err, "Failed bt_conn_auth_cb_register %d", err);
 }
 
 static void test_setup(void)
@@ -180,24 +270,25 @@ static void test_setup(void)
 
     err = bt_enable(NULL);
     TEST_ASSERT(!err, "bt_enable failed.");
+
+    err = bt_conn_auth_info_cb_register(&bt_conn_auth_info_cb);
+    TEST_ASSERT(!err, "bt_conn_auth_info_cb_register failed (%d).", err);
 }
 
 void central_test(void)
 {
     test_setup();
 
-    for (uint8_t i = 0; i < 3; i++) {
-        authenticated = i;
+    struct test_vector tests[] = {
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L2, .exp_err = false, .auth = false},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},};
 
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
         scan_and_connect();
-        WAIT_FOR_FLAG(flag_is_connected);
-
-        set_security();
-        TAKE_FLAG(flag_sec_lvl_changed);
-
-        disconnect();
-        WAIT_FOR_FLAG_UNSET(flag_is_connected);
-        clear_conn();
+        set_security(BT_SECURITY_L2);
+        disconnect_and_clear();
     }
 
     TEST_PASS("PASS");
@@ -207,14 +298,104 @@ void peripheral_test(void)
 {
     test_setup();
 
-    for (uint8_t i = 0; i < 3; i++) {
-        authenticated = i;
+    struct test_vector tests[] = {
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L2, .exp_err = false, .auth = false},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},};
 
-        advertise_connectable();
-        WAIT_FOR_FLAG(flag_is_connected);
-
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
+        advertise_and_connect();
         TAKE_FLAG(flag_sec_lvl_changed);
+        WAIT_FOR_FLAG_UNSET(flag_is_connected);
+        clear_conn();
+    }
 
+    TEST_PASS("PASS");
+}
+
+void central_coex_test(void)
+{
+    test_setup();
+    enable_passkey();
+
+    struct test_vector tests[] =
+        {{.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},
+         {.conn_cb = NULL, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = false},
+         {.conn_cb = flip_bondable, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = false},};
+
+    is_bondable = bt_get_bondable();
+
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
+        scan_and_connect();
+        set_security(test->sec_lvl);
+        disconnect_and_clear();
+        unpair();
+    }
+
+    TEST_PASS("PASS");
+}
+
+void peripheral_coex_test(void)
+{
+    test_setup();
+    enable_passkey();
+
+    is_bondable = bt_get_bondable();
+
+    struct test_vector tests[] =
+        {{.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = true},
+         {.conn_cb = NULL, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = false},
+         {.conn_cb = flip_bondable, .sec_lvl = BT_SECURITY_L4, .exp_err = false, .auth = false},};
+
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
+        advertise_and_connect();
+        TAKE_FLAG(flag_sec_lvl_changed);
+        WAIT_FOR_FLAG_UNSET(flag_is_connected);
+        clear_conn();
+        unpair();
+    }
+
+    TEST_PASS("PASS");
+}
+
+void central_invalid_ltk_test(void)
+{
+    test_setup();
+
+    struct test_vector tests[] = {
+        {.conn_cb = NULL, .sec_lvl = BT_SECURITY_L2, .exp_err = true, .auth = false},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L2, .exp_err = true, .auth = false},};
+
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
+
+        if (test->conn_cb){
+            test_ltk.val[0] = !test_ltk.val[0];
+        }
+
+        scan_and_connect();
+        set_security(test->sec_lvl);
+        disconnect_and_clear();
+    }
+
+    TEST_PASS("PASS");
+}
+
+void peripheral_invalid_ltk_test(void)
+{
+    test_setup();
+
+    struct test_vector tests[] = {
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L2, .exp_err = true, .auth = true},
+        {.conn_cb = set_custom_ltk, .sec_lvl = BT_SECURITY_L2, .exp_err = true, .auth = false}};
+
+    ARRAY_FOR_EACH_PTR(tests, test) {
+        p_test = test;
+
+        advertise_and_connect();
         WAIT_FOR_FLAG_UNSET(flag_is_connected);
         clear_conn();
     }
@@ -230,6 +411,22 @@ static const struct bst_test_instance test_to_add[] = {
     {
         .test_id = "peripheral_test",
         .test_main_f = peripheral_test,
+    },
+    {
+        .test_id = "central_coex_test",
+        .test_main_f = central_coex_test,
+    },
+    {
+        .test_id = "peripheral_coex_test",
+        .test_main_f = peripheral_coex_test,
+    },
+    {
+        .test_id = "central_invalid_ltk_test",
+        .test_main_f = central_invalid_ltk_test,
+    },
+    {
+        .test_id = "peripheral_invalid_ltk_test",
+        .test_main_f = peripheral_invalid_ltk_test,
     },
     BSTEST_END_MARKER,
 };
