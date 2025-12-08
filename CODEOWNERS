@@ -691,7 +691,6 @@
 /samples/zephyr/smp_svr_mini_boot/        @nrfconnect/ncs-eris
 /samples/zephyr/subsys/ipc/               @nrfconnect/ncs-low-level-test
 /samples/zephyr/subsys/mgmt/mcumgr/smp_svr/ @nrfconnect/ncs-eris
-/samples/zephyr/subsys/settings/          @nrfconnect/ncs-low-level-test
 /samples/zephyr/subsys/usb/               @nrfconnect/ncs-low-level-test
 /samples/zephyr/sysbuild/                 @nrfconnect/ncs-low-level-test
 
@@ -927,6 +926,7 @@
 /tests/subsys/bluetooth/enocean/          @nrfconnect/ncs-paladin
 /tests/subsys/bluetooth/fast_pair/        @nrfconnect/ncs-si-bluebagel
 /tests/subsys/bluetooth/mesh/             @nrfconnect/ncs-paladin
+/tests/subsys/bluetooth/rpc_gatt_service/  @nrfconnect/ncs-protocols-serialization
 /tests/subsys/bootloader/                 @nrfconnect/ncs-eris
 /tests/subsys/caf/                        @nrfconnect/ncs-si-muffin @nrfconnect/ncs-si-bluebagel
 /tests/subsys/debug/cpu_load/             @nordic-krch

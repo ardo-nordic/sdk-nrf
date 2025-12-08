@@ -53,7 +53,7 @@ Bootloaders and DFU
 Developing with nRF91 Series
 ============================
 
-* Moved the sections about updating the firmware using the Programmer app to the `Programming nRF91 Series DK firmware`_ tools page.
+|no_changes_yet_note|
 
 Developing with nRF70 Series
 ============================
@@ -137,8 +137,6 @@ DECT NR+
 
 Enhanced ShockBurst (ESB)
 -------------------------
-
-|no_changes_yet_note|
 
 * Updated:
 
@@ -408,7 +406,9 @@ Security libraries
 Modem libraries
 ---------------
 
-|no_changes_yet_note|
+* :ref:`lte_lc_readme` library:
+
+  * Added support for new PDN events :c:enumerator:`LTE_LC_EVT_PDN_SUSPENDED` and :c:enumerator:`LTE_LC_EVT_PDN_RESUMED`.
 
 Multiprotocol Service Layer libraries
 -------------------------------------
@@ -434,6 +434,10 @@ Other libraries
 ---------------
 
 |no_changes_yet_note|
+
+* :ref:`lib_hw_id` library:
+
+  * The ``CONFIG_HW_ID_LIBRARY_SOURCE_BLE_MAC`` Kconfig option has been renamed to :kconfig:option:`CONFIG_HW_ID_LIBRARY_SOURCE_BT_DEVICE_ADDRESS`.
 
 Shell libraries
 ---------------

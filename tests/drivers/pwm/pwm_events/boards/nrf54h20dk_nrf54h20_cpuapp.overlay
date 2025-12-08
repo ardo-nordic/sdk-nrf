@@ -17,3 +17,11 @@ tst_timer: &timer131 {
 	sink-channels = <1>;
 	status = "okay";
 };
+
+pwm_led: &led3 {
+	status = "okay";
+};
+
+debug_pin: &led1 {
+	status = "okay";
+};
